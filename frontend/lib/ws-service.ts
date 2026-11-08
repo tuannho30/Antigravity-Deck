@@ -13,6 +13,7 @@ type WSListener = (data: Record<string, unknown>) => void;
 class WebSocketService {
     private ws: WebSocket | null = null;
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    private pingTimer: ReturnType<typeof setInterval> | null = null;
     private listeners = new Map<string, Set<WSListener>>(); // type → listeners
     private wildcardListeners = new Set<WSListener>(); // receive ALL messages
     private _connected = false;
@@ -104,6 +105,12 @@ class WebSocketService {
                 if (ws !== this.ws) return; // stale socket — replaced by newer connect()
                 console.log('[WS-Service] connected');
                 this._connected = true;
+                if (this.pingTimer) clearInterval(this.pingTimer);
+                this.pingTimer = setInterval(() => {
+                    if (this.ws?.readyState === WebSocket.OPEN) {
+                        this.ws.send(JSON.stringify({ type: 'ping' }));
+                    }
+                }, 25000);
                 // Subscribe to all events so backend sends messages for ALL conversations
                 // (needed for Live Logs which monitors all cascades)
                 ws.send(JSON.stringify({ type: 'subscribe_all' }));
@@ -130,6 +137,7 @@ class WebSocketService {
                 if (ws !== this.ws) return; // stale socket — force-closed for reconnect, skip
                 console.log('[WS-Service] disconnected');
                 this._connected = false;
+                if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
                 this.emit('__ws_close', {});
                 // Only auto-reconnect if page is visible (don't waste resources in background)
                 if (typeof document === 'undefined' || document.visibilityState === 'visible') {

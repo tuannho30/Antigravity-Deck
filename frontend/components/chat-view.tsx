@@ -260,7 +260,7 @@ export function ChatView({ steps, baseIndex = 0, stepCount = 0, loadingOlder = f
         getAutoAcceptState().then(s => setAutoAccept(s.enabled)).catch(() => { });
         // Load workflows
         fetchWorkflows(currentWorkspace || undefined).then(setWorkflows).catch(() => { });
-    }, [wsVersion, currentWorkspace]);
+    }, [currentWorkspace]);
 
     // Reset localCascadeId when currentConvId changes
     useEffect(() => { setLocalCascadeId(null); }, [currentConvId]);

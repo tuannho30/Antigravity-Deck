@@ -133,44 +133,46 @@ async function fetchAllSteps(convId, totalSteps, inst = null, fromIndex = 0) {
 
 // --- Ensure cached ---
 
+const fetchingPromises = new Map(); // convId -> Promise
+
 async function ensureCached(convId, inst = null) {
-    if (fetchingSet.has(convId)) return; // per-conversation lock
-    // Hub model (2.0.11): the usable connection is the per-cascade instance when known,
-    // otherwise the shared hub (lsConfig). lsInstances can be empty (0 tracked workspaces)
-    // while the hub is fully usable, so gate on the effective connection, not instance count.
+    if (fetchingPromises.has(convId)) {
+        return fetchingPromises.get(convId);
+    }
     const conn = inst || lsConfig;
     if (!conn.port || !conn.csrfToken) {
         console.log(`[!] ensureCached skipped — LS not configured yet`);
         return; // Don't cache empty — will retry after init
     }
-    // Reuse the cache only while it's current. When new steps have streamed in (the live Jetbox
-    // stepCount is beyond the cached window end), fall through and re-fetch so the OPEN conversation
-    // updates. This is the hub-only live-update path: with 0 tracked workspaces no per-workspace
-    // poller runs, so the re-fetch is driven by the Jetbox 'conversations_updated' signal.
+    // If already cached with steps, return immediately — poller.js updates steps incrementally
     const existing = stepCache[convId];
-    if (existing) {
-        let liveCount = existing.stepCount;
-        try { const jb = require('./jetbox').getSummaries()[convId]; if (jb && typeof jb.stepCount === 'number') liveCount = jb.stepCount; } catch { }
-        if (liveCount <= ((existing.baseIndex || 0) + existing.steps.length)) return;
+    if (existing && existing.steps && existing.steps.length > 0) {
+        return;
     }
     fetchingSet.add(convId);
 
-    try {
-        const callFn = inst ? (m, b) => callApi(m, b, inst) : null;
-        const stepCount = await getStepCountAndStatus(convId, callFn).then(r => r.stepCount);
-        console.log(`[*] Loading ${convId.substring(0, 8)} (stepCount: ${stepCount}, batches: ${Math.ceil(stepCount / BATCH_SIZE)})...`);
+    const p = (async () => {
+        try {
+            const callFn = inst ? (m, b) => callApi(m, b, inst) : null;
+            const stepCount = await getStepCountAndStatus(convId, callFn).then(r => r.stepCount);
+            console.log(`[*] Loading ${convId.substring(0, 8)} (stepCount: ${stepCount}, batches: ${Math.ceil(stepCount / BATCH_SIZE)})...`);
 
-        // Only fetch the tail window (last STEP_WINDOW_SIZE steps)
-        const baseIndex = Math.max(0, stepCount - STEP_WINDOW_SIZE);
-        const { steps, hasGaps } = await fetchAllSteps(convId, stepCount, inst, baseIndex);
-        stepCache[convId] = { steps, stepCount, baseIndex };
-        console.log(`[✓] Cached ${steps.length}/${stepCount} steps (window from ${baseIndex})${hasGaps ? ' (with gaps)' : ''}`);
-    } catch (e) {
-        console.log(`[!] Load error: ${e.message}`);
-        // Don't cache empty on error — will retry on next set_conversation
-    } finally {
-        fetchingSet.delete(convId);
-    }
+            // Only fetch the tail window (last STEP_WINDOW_SIZE steps)
+            const baseIndex = Math.max(0, stepCount - STEP_WINDOW_SIZE);
+            const { steps, hasGaps } = await fetchAllSteps(convId, stepCount, inst, baseIndex);
+            stepCache[convId] = { steps, stepCount, baseIndex };
+            console.log(`[✓] Cached ${steps.length}/${stepCount} steps (window from ${baseIndex})${hasGaps ? ' (with gaps)' : ''}`);
+        } catch (e) {
+            console.log(`[!] Load error: ${e.message}`);
+            // Don't cache empty on error — will retry on next set_conversation
+        } finally {
+            fetchingSet.delete(convId);
+            fetchingPromises.delete(convId);
+        }
+    })();
+
+    fetchingPromises.set(convId, p);
+    return p;
 }
 
 // --- Shared helper: Antigravity LS API startIndex workaround ---

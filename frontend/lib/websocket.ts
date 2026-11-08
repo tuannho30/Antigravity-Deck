@@ -86,6 +86,8 @@ export function useWebSocket() {
     });
     // Use refs for values needed in WS handlers to avoid stale closures
     const currentConvIdRef = useRef<string | null>(storedConvId);
+    const stepCountRef = useRef<number>(state.stepCount);
+    const stepsLenRef = useRef<number>(state.steps.length);
     const cleanupRef = useRef<(() => void) | null>(null);
     // Grace period: suppress disconnect indicators right after mount
     const mountedAtRef = useRef(Date.now());
@@ -93,6 +95,10 @@ export function useWebSocket() {
 
     // Keep ref in sync with state
     useEffect(() => { currentConvIdRef.current = state.currentConvId; }, [state.currentConvId]);
+    useEffect(() => {
+        stepCountRef.current = state.stepCount;
+        stepsLenRef.current = state.steps.length;
+    }, [state.stepCount, state.steps.length]);
 
     const loadConversations = useCallback(async () => {
         try {
@@ -137,7 +143,11 @@ export function useWebSocket() {
             const convId = currentConvIdRef.current;
             console.log('[WS] onopen currentConvId:', convId?.substring(0, 8));
             if (convId) {
-                wsService!.send({ type: 'set_conversation', conversationId: convId });
+                wsService!.send({
+                    type: 'set_conversation',
+                    conversationId: convId,
+                    knownStepCount: stepsLenRef.current > 0 ? stepCountRef.current : 0,
+                });
             }
             // Fetch initial resource data immediately (don't wait for first 5s broadcast)
             getWorkspaceResources()
@@ -174,28 +184,33 @@ export function useWebSocket() {
             setState(prev => {
                 if (data.conversationId && data.conversationId !== prev.currentConvId) return prev;
                 const incoming = (data.steps as Step[]) || [];
+                // Never wipe out existing displayed steps with an empty steps_init array
+                if (incoming.length === 0 && prev.steps.length > 0) return prev;
                 const incomingBase = (data.baseIndex as number) ?? 0;
                 const incomingCount = (data.stepCount as number) ?? incoming.length;
 
                 // Cache steps for seamless mobile resume
                 _saveCachedSteps(incoming, incomingBase, incomingCount, prev.currentConvId);
 
-                // Merge: if same base+length, only update steps that actually changed
-                // Prevents visible re-render on auto-refresh after cascade completion
-                if (prev.baseIndex === incomingBase && prev.steps.length === incoming.length) {
-                    let anyChanged = false;
-                    const merged = prev.steps.map((oldStep, i) => {
-                        if (i >= incoming.length - 5 && JSON.stringify(oldStep) !== JSON.stringify(incoming[i])) {
-                            anyChanged = true;
-                            return incoming[i];
+                // Merge in-place when baseIndex matches and incoming >= prev.steps.length
+                // Preserves object references for unchanged steps so React never re-mounts the chat list
+                if (prev.baseIndex === incomingBase && prev.steps.length > 0 && incoming.length >= prev.steps.length) {
+                    let anyChanged = incoming.length !== prev.steps.length;
+                    const merged = incoming.map((incStep, i) => {
+                        if (i < prev.steps.length) {
+                            if (i >= prev.steps.length - 5 && JSON.stringify(prev.steps[i]) !== JSON.stringify(incStep)) {
+                                anyChanged = true;
+                                return incStep;
+                            }
+                            return prev.steps[i];
                         }
-                        return oldStep;
+                        return incStep;
                     });
                     if (!anyChanged) return prev;
                     return { ...prev, steps: merged, stepCount: incomingCount, lastUpdate: new Date().toLocaleTimeString() };
                 }
 
-                // Different base/length — full replacement (initial load, conversation switch)
+                // Initial load or conversation switch
                 return {
                     ...prev,
                     steps: incoming,
@@ -267,25 +282,12 @@ export function useWebSocket() {
                                data.status !== 'CASCADE_RUN_STATUS_WAITING_FOR_USER';
                 if (isDone && prev.cascadeStatus && prev.cascadeStatus !== data.status) {
                     newState.conversationsVersion = prev.conversationsVersion + 1;
-                    // Auto re-sync step content: backend just invalidated cache,
-                    // re-send set_conversation to get fresh steps_init with finalized data.
-                    // steps_init handler uses merge (not replace) so no visible flicker.
-                    const convId = prev.currentConvId;
-                    if (convId) {
-                        wsService?.send({ type: 'set_conversation', conversationId: convId });
-                    }
                 }
                 return newState;
             });
         });
 
         const offConvUpdated = wsService.on('conversations_updated', () => {
-            console.log('[WS] conversations_updated — refreshing sidebar + open conversation');
-            // Hub-only mode has no per-workspace step poller, so use the Jetbox 'conversations_updated'
-            // signal to re-pull the OPEN conversation's steps. The backend re-fetches only when new
-            // steps actually arrived, and steps_init merges in place, so there's no visible flicker.
-            const convId = currentConvIdRef.current;
-            if (convId) wsService?.send({ type: 'set_conversation', conversationId: convId });
             setState(prev => ({ ...prev, conversationsVersion: prev.conversationsVersion + 1 }));
         });
 
@@ -360,17 +362,9 @@ export function useWebSocket() {
         }
     }, [state.loadingOlder, state.baseIndex]);
 
-    // Fallback safety net: re-sync only for rare missed WS broadcasts
-    // Primary data flow is BE push (cascade_status + steps_new), not this timer
-    useEffect(() => {
-        const fallback = setInterval(() => {
-            const convId = currentConvIdRef.current;
-            if (convId && wsService?.connected) {
-                wsService.send({ type: 'set_conversation', conversationId: convId });
-            }
-        }, 30000); // 30s — safety net only, not primary data flow
-        return () => clearInterval(fallback);
-    }, []);
+    // Note: removed 30s set_conversation interval because re-sending full steps_init (with base64 images)
+    // every 30s over Cloudflare Tunnel causes mobile browsers to choke/reload. Incremental steps_new
+    // and step_updated from poller.js already keep the open conversation in sync in real-time.
 
     // HTTP polling fallback for LS detection status
     // If WS status message is missed (timing, proxy, reconnect), this polls /api/status

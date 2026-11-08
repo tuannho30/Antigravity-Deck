@@ -38,6 +38,9 @@ function setupWebSocket(wss, { ensureCached, stepCache }) {
                     console.log(`[WS] set_conversation → ${msg.conversationId?.substring(0, 8)}, clients: ${clientConvMap.size}`);
                     await ensureCached(msg.conversationId, getInstanceForCascade(msg.conversationId));
                     const cache = stepCache[msg.conversationId];
+                    if (msg.knownStepCount && cache && cache.stepCount === msg.knownStepCount) {
+                        return;
+                    }
                     sendToOne(ws, {
                         type: 'steps_init',
                         conversationId: msg.conversationId,
@@ -45,6 +48,8 @@ function setupWebSocket(wss, { ensureCached, stepCache }) {
                         baseIndex: cache ? (cache.baseIndex || 0) : 0,
                         stepCount: cache ? (cache.stepCount || 0) : 0,
                     });
+                } else if (msg.type === 'ping') {
+                    sendToOne(ws, { type: 'pong' });
                 } else if (msg.type === 'subscribe_all') {
                     // Live Logs mode: receive all broadcasts regardless of conversation
                     globalViewers.add(ws);

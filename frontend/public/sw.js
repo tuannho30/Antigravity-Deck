@@ -1,7 +1,7 @@
 // === Antigravity Deck — Service Worker ===
 // Handles: PWA install, app shell caching, notification display, notification click
 
-const SW_VERSION = '1.1.2';
+const SW_VERSION = '1.1.3';
 const CACHE_NAME = `ag-deck-${SW_VERSION}`;
 
 // === Install ===
