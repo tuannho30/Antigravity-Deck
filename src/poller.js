@@ -65,7 +65,9 @@ function startPolling() {
 // --- Poll tick: discover ALL running conversations across ALL LS instances ---
 
 async function pollNow() {
-    if (lsInstances.length === 0) return;
+    const { getFirstActiveInstance } = require('./detector');
+    const instancesToPoll = lsInstances.length > 0 ? lsInstances : (getFirstActiveInstance() ? [getFirstActiveInstance()] : []);
+    if (instancesToPoll.length === 0) return;
     if (isPollRunning) return; // debounce
     isPollRunning = true;
 
@@ -78,7 +80,7 @@ async function pollNow() {
         // instances share one connection (port+csrf) and GetAllCascadeTrajectories is
         // global. Poll each unique connection once to avoid redundant identical calls.
         const seenConns = new Set();
-        for (const inst of lsInstances) {
+        for (const inst of instancesToPoll) {
             const connKey = `${inst.useTls ? 's' : ''}${inst.port}:${inst.csrfToken}`;
             if (seenConns.has(connKey)) continue;
             seenConns.add(connKey);
@@ -419,7 +421,8 @@ async function pollConversation(activeConvId, info) {
 let sseAbortController = null;
 
 async function startCascadeSSE() {
-    const sseInst = lsInstances[0];
+    const { getFirstActiveInstance } = require('./detector');
+    const sseInst = lsInstances[0] || getFirstActiveInstance();
     if (!sseInst?.port || !sseInst?.csrfToken) {
         console.log('[SSE] Not starting — LS not configured');
         return;

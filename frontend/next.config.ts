@@ -7,6 +7,7 @@ const BE_HOST = `http://localhost:${BE_PORT}`;
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  allowedDevOrigins: ['192.168.1.11', '*.trycloudflare.com'],
   // devIndicators: false — enabled in dev so devs know it's not production
 
   // Allow long-running backend responses (e.g. workspace create waits up to 30s for LS detection)

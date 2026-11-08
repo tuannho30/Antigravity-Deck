@@ -244,7 +244,9 @@ async function sampleAll() {
     };
 
     // --- Per-workspace stats ---
-    const pids = lsInstances.map(inst => String(inst.pid));
+    const { getFirstActiveInstance } = require('./detector');
+    const activeInstances = lsInstances.length > 0 ? lsInstances : (getFirstActiveInstance() ? [getFirstActiveInstance()] : []);
+    const pids = [...new Set(activeInstances.map(inst => String(inst.pid)))];
 
     if (pids.length > 0) {
         const childMap = new Map();
@@ -290,8 +292,8 @@ async function sampleAll() {
     // --- Push to history ring buffer ---
     const workspaces = {};
     for (const [pid, stats] of resourceData) {
-        const inst = lsInstances.find(i => String(i.pid) === pid);
-        workspaces[pid] = { ...stats, name: inst?.workspaceName || pid };
+        const inst = activeInstances.find(i => String(i.pid) === pid);
+        workspaces[pid] = { ...stats, name: inst?.workspaceName || `Hub (${pid})` };
     }
 
     history.push({
@@ -312,10 +314,12 @@ async function sampleAll() {
  * Full snapshot: system + per-workspace + history.
  */
 function getResourceSnapshot() {
+    const { getFirstActiveInstance } = require('./detector');
+    const activeInstances = lsInstances.length > 0 ? lsInstances : (getFirstActiveInstance() ? [getFirstActiveInstance()] : []);
     const workspaces = {};
     for (const [pid, stats] of resourceData) {
-        const inst = lsInstances.find(i => String(i.pid) === pid);
-        workspaces[pid] = { ...stats, name: inst?.workspaceName || pid };
+        const inst = activeInstances.find(i => String(i.pid) === pid);
+        workspaces[pid] = { ...stats, name: inst?.workspaceName || `Hub (${pid})` };
     }
 
     return {

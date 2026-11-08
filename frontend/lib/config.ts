@@ -11,24 +11,19 @@ let _wsUrl: string | null = null;
 const WS_URL_CACHE_KEY = 'antigravity-ws-url';
 
 export async function getWsUrl(): Promise<string> {
-    if (_wsUrl) return _wsUrl;
-
     const isBrowser = typeof window !== 'undefined';
     if (!isBrowser) return 'ws://localhost:3500';
 
-    // Try localStorage cache first (instant — no HTTP round trip on cold reload)
-    const cached = localStorage.getItem(WS_URL_CACHE_KEY);
-    if (cached) {
-        _wsUrl = cached;
-        // Refresh cache in background (non-blocking) so it stays up to date
-        _refreshWsUrlCache();
+    // Always resolve fresh from /api/ws-url so a tunnel restart never uses a stale cached URL
+    try {
+        _wsUrl = await _resolveWsUrl();
+        localStorage.setItem(WS_URL_CACHE_KEY, _wsUrl);
         return _wsUrl;
+    } catch {
+        const cached = localStorage.getItem(WS_URL_CACHE_KEY);
+        if (cached) return cached;
+        return `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
     }
-
-    // First-ever load: resolve and cache
-    _wsUrl = await _resolveWsUrl();
-    localStorage.setItem(WS_URL_CACHE_KEY, _wsUrl);
-    return _wsUrl;
 }
 
 async function _resolveWsUrl(): Promise<string> {
@@ -42,20 +37,24 @@ async function _resolveWsUrl(): Promise<string> {
         /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
         /^169\.254\./.test(hostname);
 
-    if (isLocal) {
-        try {
-            const res = await fetch('/api/ws-url');
-            const { wsPort } = await res.json();
+    try {
+        const res = await fetch('/api/ws-url');
+        const { wsPort, wsUrl } = await res.json();
+        if (isLocal) {
             return `ws://${hostname}:${wsPort}`;
-        } catch {
+        }
+        if (wsUrl) {
+            return wsUrl.replace(/^http/, 'ws');
+        }
+    } catch {
+        if (isLocal) {
             return `ws://${hostname}:3500`;
         }
-    } else {
-        const tunnel = process.env.NEXT_PUBLIC_BACKEND_URL || '';
-        return tunnel
-            ? tunnel.replace(/^http/, 'ws')
-            : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
     }
+    const tunnel = process.env.NEXT_PUBLIC_BACKEND_URL || '';
+    return tunnel
+        ? tunnel.replace(/^http/, 'ws')
+        : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
 }
 
 function _refreshWsUrlCache() {

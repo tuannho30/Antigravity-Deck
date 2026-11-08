@@ -15,7 +15,7 @@ export function AuthGate({ children }: AuthGateProps) {
     const [key, setKey] = useState('');
     const [error, setError] = useState('');
     const [checking, setChecking] = useState(false);
-    const [authenticated, setAuthenticated] = useState(false);
+    const [authenticated, setAuthenticated] = useState(true);
 
     // Client-side auth check after hydration (avoids SSR mismatch)
     useEffect(() => {

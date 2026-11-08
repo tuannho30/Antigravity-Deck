@@ -29,9 +29,11 @@ module.exports = function setupCascadeRoutes(app) {
     app.post('/api/cascade/send', async (req, res) => {
         try {
             const { cascadeId, message, modelId, images, imageBase64 } = req.body;
-            if (!cascadeId || !message) {
-                return res.status(400).json({ error: 'cascadeId and message are required' });
+            const hasMedia = (images && images.length > 0) || !!imageBase64;
+            if (!cascadeId || (!message && !hasMedia)) {
+                return res.status(400).json({ error: 'cascadeId and message (or image) are required' });
             }
+            const textMsg = message || ' ';
             // Fire-and-forget: start the stream but don't await completion
             // Polling will pick up the AI's response steps in real-time
             const opts = { modelId };
@@ -41,7 +43,7 @@ module.exports = function setupCascadeRoutes(app) {
                 opts.imageBase64 = imageBase64; // legacy single-image fallback
             }
             const inst = resolveInst(req);
-            sendMessage(cascadeId, message, { ...opts, inst }).catch(e => console.error('[Cascade send error]', e.message));
+            sendMessage(cascadeId, textMsg, { ...opts, inst }).catch(e => console.error('[Cascade send error]', e.message));
             res.json({ ok: true, cascadeId });
         } catch (e) { res.status(500).json({ error: e.message }); }
     });
@@ -50,9 +52,11 @@ module.exports = function setupCascadeRoutes(app) {
     app.post('/api/cascade/submit', async (req, res) => {
         try {
             const { message, modelId, images, imageBase64, workspaceUri } = req.body;
-            if (!message) {
-                return res.status(400).json({ error: 'message is required' });
+            const hasMedia = (images && images.length > 0) || !!imageBase64;
+            if (!message && !hasMedia) {
+                return res.status(400).json({ error: 'message (or image) is required' });
             }
+            const textMsg = message || ' ';
             // Start cascade synchronously, then fire-and-forget the message.
             // workspaceUri (a project folder file:// URI) binds the new cascade to that
             // project so it appears under it; without it the hub creates a detached convo.
@@ -66,7 +70,7 @@ module.exports = function setupCascadeRoutes(app) {
             } else if (imageBase64) {
                 opts.imageBase64 = imageBase64;
             }
-            sendMessage(cascadeId, message, opts).catch(e => console.error('[Cascade submit error]', e.message));
+            sendMessage(cascadeId, textMsg, opts).catch(e => console.error('[Cascade submit error]', e.message));
             res.json({ cascadeId });
         } catch (e) { res.status(500).json({ error: e.message }); }
     });

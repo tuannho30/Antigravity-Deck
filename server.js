@@ -194,7 +194,15 @@ app.use('/api', (req, res, next) => {
 
 // Public route — must be registered BEFORE auth middleware
 app.get('/api/ws-url', (req, res) => {
-  res.json({ wsPort: Number(process.env.PORT || 3500) });
+  let wsUrl = process.env.BACKEND_TUNNEL_URL || '';
+  if (!wsUrl) {
+    try {
+      const info = fs.readFileSync(path.join(__dirname, '.tunnel-info.txt'), 'utf8');
+      const m = info.match(/Backend[^:]*:\s*(https:\/\/[^\s]+)/);
+      if (m) wsUrl = m[1];
+    } catch {}
+  }
+  res.json({ wsPort: Number(process.env.PORT || 3500), wsUrl });
 });
 
 // Auth middleware — only active when AUTH_KEY env var is set

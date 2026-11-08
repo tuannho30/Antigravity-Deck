@@ -7,6 +7,17 @@
 const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+
+// Ensure portable node & cloudflared are in PATH even when spawned via WMI/Task Scheduler
+if (process.platform === 'win32') {
+    const localPrograms = path.join(os.homedir(), 'AppData', 'Local', 'Programs');
+    const extraPaths = [
+        path.join(localPrograms, 'nodejs'),
+        path.join(localPrograms, 'cloudflared'),
+    ];
+    process.env.PATH = extraPaths.join(';') + ';' + (process.env.PATH || '');
+}
 
 // === Port configuration (single source of truth) ===
 const FE_PORT = 9808;  // Production FE port (dev uses 3000)
@@ -26,7 +37,12 @@ const allProcs = []; // Track all spawned processes for cleanup
 function findCloudflared() {
     try { execSync('cloudflared --version', { stdio: 'ignore' }); return 'cloudflared'; } catch { }
     const paths = IS_WIN
-        ? ['C:\\Program Files (x86)\\cloudflared\\cloudflared.exe', 'C:\\Program Files\\cloudflared\\cloudflared.exe']
+        ? [
+            path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'cloudflared', 'cloudflared.exe'),
+            path.join(process.env.LOCALAPPDATA || '', 'Programs', 'cloudflared', 'cloudflared.exe'),
+            'C:\\Program Files (x86)\\cloudflared\\cloudflared.exe',
+            'C:\\Program Files\\cloudflared\\cloudflared.exe'
+          ]
         : ['/opt/homebrew/bin/cloudflared', '/usr/local/bin/cloudflared'];
     for (const p of paths) {
         if (fs.existsSync(p)) return IS_WIN ? `"${p}"` : p;
@@ -186,7 +202,7 @@ async function runLocal() {
     // Start frontend
     progress('Starting frontend...');
     log('*', `Starting frontend on port ${FE_PORT}...`);
-    const fe = startProcess('FE', 'npx', ['next', 'start', '--port', String(FE_PORT)], {
+    const fe = startProcess('FE', 'npx', ['next', 'start', '-H', '0.0.0.0', '--port', String(FE_PORT)], {
         cwd: path.join(__dirname, 'frontend'),
         env: { ...process.env, BACKEND_PORT: String(BE_PORT), NODE_ENV: 'production' }
     });
@@ -218,20 +234,18 @@ async function runTunnel() {
     // Kill stale processes
     killStaleProcesses([BE_PORT, FE_PORT]);
 
-    const crypto = require('crypto');
-    const authKey = process.env.AUTH_KEY || crypto.randomBytes(16).toString('hex');
+    const authKey = ''; // Password disabled per user request
 
     if (!QUIET) {
-        console.log('\n\x1b[1m  🚀 Antigravity Deck — Starting with Cloudflare Tunnel\x1b[0m');
-        console.log(`  🔑 Auth Key: \x1b[33m${authKey}\x1b[0m\n`);
+        console.log('\n\x1b[1m  🚀 Antigravity Deck — Starting with Cloudflare Tunnel (No Password)\x1b[0m\n');
     }
 
     // Step 1: Start backend
     progress('Starting backend...');
-    log('*', `Starting backend on port ${BE_PORT}...`);
-    const be = startProcess('BE', 'node', ['server.js'], {
+    log('*', `Starting backend on port ${BE_PORT} (--no-auth)...`);
+    const be = startProcess('BE', 'node', ['server.js', '--no-auth'], {
         cwd: __dirname,
-        env: { ...process.env, PORT: String(BE_PORT), AUTH_KEY: authKey, QUIET_POLL: '1', NODE_ENV: 'production' }
+        env: { ...process.env, PORT: String(BE_PORT), AUTH_KEY: '', QUIET_POLL: '1', NODE_ENV: 'production' }
     });
     await new Promise(resolve => setTimeout(resolve, 3000));
 
@@ -273,14 +287,20 @@ async function runTunnel() {
     if (!beUrl) { log('*', '❌ Failed to get backend tunnel URL'); process.exit(1); }
     log('*', `✅ Backend tunnel: ${beUrl}`);
 
-    // Step 3: Build frontend (always — needs NEXT_PUBLIC_BACKEND_URL baked in)
-    buildFrontend({ NEXT_PUBLIC_BACKEND_URL: beUrl, NEXT_PUBLIC_BACKEND_PORT: String(BE_PORT) });
-    try { fs.writeFileSync(path.join(__dirname, 'frontend', '.next', '.backend-port'), String(BE_PORT)); } catch { }
+    // Step 3: Build frontend only if not already built (or if --build flag passed)
+    // Runtime /api/ws-url provides the dynamic backend tunnel URL, so no rebuild is needed on reboot!
+    const buildIdFile = path.join(__dirname, 'frontend', '.next', 'BUILD_ID');
+    if (FORCE_BUILD || !fs.existsSync(buildIdFile)) {
+        buildFrontend({ NEXT_PUBLIC_BACKEND_URL: beUrl, NEXT_PUBLIC_BACKEND_PORT: String(BE_PORT) });
+        try { fs.writeFileSync(path.join(__dirname, 'frontend', '.next', '.backend-port'), String(BE_PORT)); } catch { }
+    } else {
+        log('*', '✅ Frontend already built (fast startup — skipping rebuild)');
+    }
 
     // Step 4: Start frontend
     progress('Starting frontend...');
     log('*', `Starting frontend on port ${FE_PORT}...`);
-    const fe = startProcess('FE', 'npx', ['next', 'start', '--port', String(FE_PORT)], {
+    const fe = startProcess('FE', 'npx', ['next', 'start', '-H', '0.0.0.0', '--port', String(FE_PORT)], {
         cwd: path.join(__dirname, 'frontend'),
         env: { ...process.env, NEXT_PUBLIC_BACKEND_URL: beUrl, BACKEND_PORT: String(BE_PORT), NODE_ENV: 'production' }
     });
@@ -316,31 +336,55 @@ async function runTunnel() {
         tunFe.stderr?.on('data', handler);
     });
 
-    const qrUrl = feUrl ? `${feUrl}?key=${authKey}` : null;
+    const fixedUrl = 'https://tuannho30.github.io/deck/';
+    const qrUrl = fixedUrl;
     if (QUIET) process.stdout.write('\r\x1b[K');
+
+    // Auto-update GitHub Gist so https://tuannho30.github.io/deck/ always redirects to current feUrl
+    if (feUrl) {
+        try {
+            const gistIdFile = path.join(__dirname, '.gist-id');
+            const gistId = fs.existsSync(gistIdFile) ? fs.readFileSync(gistIdFile, 'utf8').trim() : '66aef5297deb252de870eb5d8ecdbbf3';
+            const os = require('os');
+            const tmpJson = path.join(os.tmpdir(), 'tunnel.json');
+            const autoUrl = `${feUrl}?key=ok`;
+            fs.writeFileSync(tmpJson, JSON.stringify({
+                url: autoUrl,
+                backend: beUrl,
+                lan: `http://192.168.1.11:${FE_PORT}?key=ok`,
+                updatedAt: new Date().toISOString()
+            }));
+            const ghExe = 'C:\\Program Files\\GitHub CLI\\gh.exe';
+            if (fs.existsSync(ghExe)) {
+                execSync(`"${ghExe}" gist edit ${gistId} -f tunnel.json "${tmpJson}"`, { stdio: 'ignore', timeout: 15000 });
+                log('*', `✅ Fixed URL updated → ${fixedUrl}`);
+            }
+        } catch (e) {
+            log('*', `⚠️  Could not update Gist: ${e.message}`);
+        }
+    }
 
     if (feUrl) {
         console.log('\n' + '='.repeat(60));
-        console.log('\x1b[1m\x1b[32m  🌐 READY! Open this URL on any device:\x1b[0m');
-        console.log(`\x1b[1m  👉 ${feUrl}\x1b[0m`);
-        console.log(`  🔑 Key: \x1b[33m${authKey}\x1b[0m`);
+        console.log('\x1b[1m\x1b[32m  🌐 READY! Permanent Link (Never Changes, No Password):\x1b[0m');
+        console.log(`\x1b[1m  👉 ${fixedUrl}\x1b[0m`);
+        console.log(`  🔗 Direct Tunnel: ${feUrl}`);
         console.log('='.repeat(60));
         console.log(`  Backend API: ${beUrl}`);
-        console.log(`  Local:       http://localhost:${FE_PORT}`);
+        console.log(`  LAN Wi-Fi:   http://192.168.1.11:${FE_PORT}`);
+        console.log(`  Local PC:    http://localhost:${FE_PORT}`);
         console.log('='.repeat(60));
 
-        console.log('\n\x1b[1m  📱 Scan this QR code to open (auto-login):\x1b[0m\n');
+        console.log('\n\x1b[1m  📱 Scan this QR code (Permanent Link):\x1b[0m\n');
         try {
             const qrcode = require('qrcode-terminal');
-            qrcode.generate(qrUrl, { small: true }, (qr) => {
+            qrcode.generate(fixedUrl, { small: true }, (qr) => {
                 console.log(qr.split('\n').map(l => '    ' + l).join('\n'));
-                console.log(`\n  🔗 ${qrUrl}`);
-                console.log(`  💻 Local: \x1b[36mhttp://localhost:${FE_PORT}/?key=${authKey}\x1b[0m\n`);
+                console.log(`\n  🔗 Permanent Link: ${fixedUrl}`);
+                console.log(`  💻 LAN Wi-Fi:      \x1b[36mhttp://192.168.1.11:${FE_PORT}\x1b[0m\n`);
             });
         } catch {
-            console.log(`  (qrcode-terminal not installed — scan URL manually)`);
-            console.log(`  🔗 ${qrUrl}`);
-            console.log(`  💻 Local: \x1b[36mhttp://localhost:${FE_PORT}/?key=${authKey}\x1b[0m\n`);
+            console.log(`  🔗 Permanent Link: ${fixedUrl}`);
         }
     } else {
         log('*', '⚠️  Frontend tunnel failed, but local access still works');
@@ -350,15 +394,20 @@ async function runTunnel() {
     // Write tunnel info file
     const infoFile = path.join(__dirname, '.tunnel-info.txt');
     const info = [
-        `Frontend: ${feUrl || 'FAILED'}`,
-        `Backend:  ${beUrl || 'FAILED'}`,
-        `Auth Key: ${authKey}`,
-        `QR URL:   ${qrUrl || 'N/A'}`,
-        `Local FE: http://localhost:${FE_PORT}`,
-        `Local BE: http://localhost:${BE_PORT}`,
-        `Started:  ${new Date().toISOString()}`,
+        `Permanent Link:   ${fixedUrl}`,
+        `Direct Tunnel:    ${feUrl || 'FAILED'}`,
+        `Backend API:      ${beUrl || 'FAILED'}`,
+        `Password:         NONE (Disabled)`,
+        `LAN Wi-Fi URL:    http://192.168.1.11:${FE_PORT}`,
+        `Local PC URL:     http://localhost:${FE_PORT}`,
+        `Started:          ${new Date().toISOString()}`,
     ].join('\n');
     fs.writeFileSync(infoFile, info);
+    try {
+        const os = require('os');
+        const desktopFile = path.join(os.homedir(), 'Desktop', 'Antigravity-Deck-Link.txt');
+        fs.writeFileSync(desktopFile, info);
+    } catch {}
     log('*', `Tunnel info written to ${infoFile}`);
 
     // Keep remaining output flowing

@@ -31,7 +31,7 @@ async function startCascade(inst = null, opts = {}) {
 // options.media = array of { mimeType, inlineData, uri, thumbnail } (from SaveMediaAsArtifact flow)
 async function sendMessage(cascadeId, text, options = {}) {
     const {
-        modelId = 'MODEL_PLACEHOLDER_M26',
+        modelId = 'MODEL_PLACEHOLDER_M418',
         timeoutMs = 120000,
         media = null,        // array of media objects (new multi-image approach)
         imageBase64 = null,  // legacy single-image (kept for backward compat)
@@ -39,19 +39,23 @@ async function sendMessage(cascadeId, text, options = {}) {
 
     const items = [{ text }];
 
+    const plannerConfig = {
+        plannerTypeConfig: {
+            case: 'conversational',
+            value: {}
+        },
+    };
+    const rawModel = (modelId && modelId.trim()) ? modelId.trim() : 'MODEL_PLACEHOLDER_M418';
+    const effectiveModel = (rawModel === 'MODEL_PLACEHOLDER_M26') ? 'MODEL_PLACEHOLDER_M418' : rawModel;
+    plannerConfig.planModel = effectiveModel;
+    plannerConfig.requestedModel = { modelId: effectiveModel };
+
     const body = {
         metadata: {},
         cascadeId,
         items,
         cascadeConfig: {
-            plannerConfig: {
-                plannerTypeConfig: {
-                    case: 'conversational',
-                    value: {}
-                },
-                planModel: modelId,
-                requestedModel: { modelId }
-            }
+            plannerConfig
         }
     };
 

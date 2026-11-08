@@ -146,13 +146,9 @@ export function useWebSocket() {
         });
 
         const offClose = wsService.on('__ws_close', () => {
-            // During grace period after mount, suppress disconnect to avoid flash
-            if (graceActiveRef.current && (Date.now() - mountedAtRef.current) < RECONNECT_GRACE_MS) {
-                console.log('[WS] close during grace period — suppressing disconnect UI');
-                return;
-            }
-            graceActiveRef.current = false;
-            setState(prev => ({ ...prev, connected: false, detected: false }));
+            // Never set detected=false on temporary WS disconnect — doing so unmounts ChatView
+            // and causes the mobile UI to flash/refresh when reconnecting.
+            setState(prev => ({ ...prev, connected: false }));
         });
 
         const offStatus = wsService.on('status', (data) => {

@@ -63,7 +63,7 @@ async function detectLanguageServers() {
         if (platform === 'win32') {
             const tmpScript = path.join(os.tmpdir(), '_ls_detect.ps1');
             fs.writeFileSync(tmpScript,
-                "Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*language_server*' } | Select-Object ProcessId, CommandLine | Format-List\n"
+                "Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*language_server*' -or $_.Name -eq 'agy.exe' -or $_.CommandLine -like '*--csrf_token*' } | Select-Object ProcessId, Name, CommandLine | Format-List\n"
             );
             // Use full path — powershell may not be in PATH (e.g. Git Bash, some RDP sessions)
             const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
@@ -107,9 +107,11 @@ async function detectLanguageServers() {
                 const blocks = stdout.split(/\r?\n\r?\n/);
                 for (const block of blocks) {
                     if (!block.trim()) continue;
+                    // Collapse PowerShell Format-List line wraps ("CommandLine : ...\r\n              ...")
+                    const flatBlock = block.replace(/\r?\n\s+/g, '');
                     const pidMatch = block.match(/ProcessId\s*:\s*(\d+)/);
-                    const csrfMatch = block.match(/--csrf_token\s+([a-f0-9-]+)/);
-                    const wsMatch = block.match(/--workspace_id\s+(\S+)/);
+                    const csrfMatch = flatBlock.match(/--csrf_token[=\s]+([a-f0-9-]+)/i);
+                    const wsMatch = flatBlock.match(/--workspace_id[=\s]+(\S+)/);
                     if (pidMatch && csrfMatch) {
                         instances.push({
                             pid: pidMatch[1],
@@ -122,8 +124,8 @@ async function detectLanguageServers() {
                 stdout.split('\n').forEach(line => {
                     if (!line.trim()) return;
                     const pidMatch = line.match(/\S+\s+(\d+)/);
-                    const csrfMatch = line.match(/--csrf_token\s+([a-f0-9-]+)/);
-                    const wsMatch = line.match(/--workspace_id\s+(\S+)/);
+                    const csrfMatch = line.match(/--csrf_token[=\s]+([a-f0-9-]+)/i);
+                    const wsMatch = line.match(/--workspace_id[=\s]+(\S+)/);
                     if (pidMatch && csrfMatch) {
                         instances.push({
                             pid: pidMatch[1],
@@ -166,7 +168,7 @@ async function detectPorts(pid) {
                     // Or on some locales: "  TCP    0.0.0.0:42150    0.0.0.0:0    ĐANG NGHE    12345"
                     // We just split by whitespace and check if the last token matches the PID
                     const parts = line.trim().split(/\s+/);
-                    if (parts.length >= 4 && parts[parts.length - 1] === pidStr) {
+                    if (parts.length >= 4 && parts[parts.length - 1] === pidStr && (parts[2] === '0.0.0.0:0' || parts[2] === '[::]:0')) {
                         const addrPort = parts[1]; // "0.0.0.0:42150"
                         if (addrPort) {
                            const port = parseInt(addrPort.split(':').pop(), 10);
@@ -388,14 +390,42 @@ async function rescanLoop() {
     rescanTimer = setTimeout(rescanLoop, hubInstance ? NORMAL_RESCAN_INTERVAL : FAST_RESCAN_INTERVAL);
 }
 
+// Fast health check for an already-known hub without spawning PowerShell/netstat
+async function isHubAlive(hub) {
+    if (!hub || !hub.port || !hub.csrfToken) return false;
+    try {
+        const protocol = hub.useTls ? 'https' : 'http';
+        const host = hub.useTls ? '127.0.0.1' : 'localhost';
+        const headers = { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'X-Codeium-Csrf-Token': hub.csrfToken };
+        const url = `${protocol}://${host}:${hub.port}/exa.language_server_pb.LanguageServerService/GetUserStatus`;
+        const res = await connectPost(url, headers, '{}', 5000);
+        return res.ok;
+    } catch {
+        return false;
+    }
+}
+
+let consecutiveMisses = 0;
+
 async function rescanNow() {
     if (scanInProgress) return; // don't overlap with init() or another rescan
     scanInProgress = true;
     try {
-        const hub = await locateHub();
+        let hub = null;
+        if (hubInstance && await isHubAlive(hubInstance)) {
+            hub = hubInstance;
+            consecutiveMisses = 0;
+        } else {
+            hub = await locateHub();
+        }
 
-        // Hub gone — clear everything and broadcast disconnect
+        // Hub gone — require 3 consecutive misses before clearing to avoid UI flash/reload
         if (!hub) {
+            consecutiveMisses++;
+            if (hubInstance && consecutiveMisses < 3) {
+                console.log(`[~] Hub check missed (${consecutiveMisses}/3) — keeping existing hub state`);
+                return;
+            }
             const wasDetected = !!hubInstance;
             clearHub();
             if (wasDetected) {
@@ -415,6 +445,7 @@ async function rescanNow() {
             }
             return;
         }
+        consecutiveMisses = 0;
 
         const hubChanged = !hubInstance ||
             hubInstance.pid !== hub.pid ||

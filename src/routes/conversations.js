@@ -116,9 +116,11 @@ module.exports = function setupConversationsRoutes(app) {
             }
             // Fallback (Jetbox not populated yet): merge live cascade lists per unique hub conn.
             const { lsInstances } = require('../config');
+            const { getFirstActiveInstance } = require('../detector');
+            const instances = lsInstances.length > 0 ? lsInstances : (getFirstActiveInstance() ? [getFirstActiveInstance()] : []);
             const merged = { trajectorySummaries: {} };
             const seenConns = new Set();
-            for (const inst of lsInstances) {
+            for (const inst of instances) {
                 const connKey = `${inst.useTls ? 's' : ''}${inst.port}:${inst.csrfToken}`;
                 if (seenConns.has(connKey)) continue;
                 seenConns.add(connKey);

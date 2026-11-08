@@ -18,7 +18,7 @@ class WebSocketService {
     private _connected = false;
     private visibilityBound = false;
     private hiddenAt = 0; // timestamp when tab was last hidden
-    private static STALE_THRESHOLD = 5000; // 5s hidden → assume WS is stale
+    private static STALE_THRESHOLD = 60000; // 60s hidden → assume WS is stale
 
     get connected() { return this._connected; }
 
